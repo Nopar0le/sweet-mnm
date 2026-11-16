@@ -34,6 +34,7 @@ import static org.mnm.client.LinuxOptionsTestFactory.wineOptions;
 import static org.mnm.config.Client.Status.UPDATED;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.eq;
 
 class ClientRunnerTest {
 
@@ -178,6 +179,35 @@ class ClientRunnerTest {
         assertThat(result.workingDir).isEqualTo(installPath);
         assertThat(result.command).containsExactly("%s\\%s".formatted(SLUG, "mnm.exe"), "--token", token);
         assertThat(result.environment).isEmpty();
+    }
+
+    @Test
+    void shouldStartWindowsClientCommand(@TempDir Path tempDir) {
+        Path installPath = tempDir.resolve("install");
+        String token = validToken();
+        Client client = new Client(SLUG, "v1.0.0", UPDATED, installPath);
+
+        ConfigDb configDb = Mockito.mock(ConfigDb.class);
+        Mockito.when(configDb.getClients()).thenReturn(List.of(client));
+        Mockito.when(configDb.getTokens(SLUG)).thenReturn(List.of(new Token(1, SLUG, token)));
+        Process process = Mockito.mock(Process.class);
+        AtomicReference<String[]> command = new AtomicReference<>();
+
+        try (MockedStatic<OS> osMock = Mockito.mockStatic(OS.class);
+             MockedStatic<ProcessUtils> processMock = Mockito.mockStatic(ProcessUtils.class)) {
+            osMock.when(OS::isWindows).thenReturn(true);
+            processMock.when(() -> ProcessUtils.start(any(Path.class), any(String[].class), anyMap()))
+                .thenAnswer(invocation -> {
+                    command.set(invocation.getArgument(1));
+                    return process;
+                });
+
+            Process result = new ClientRunner(configDb).start(new RunnerOptions(null, null, true, defaultLinuxOptions()));
+
+            assertThat(result).isSameAs(process);
+            processMock.verify(() -> ProcessUtils.start(eq(installPath), any(String[].class), anyMap()));
+            assertThat(command.get()).containsExactly("%s\\%s".formatted(SLUG, "mnm.exe"), "--token", token);
+        }
     }
 
     @Test

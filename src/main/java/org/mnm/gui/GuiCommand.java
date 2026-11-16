@@ -9,8 +9,10 @@ import java.awt.Font;
 import java.awt.event.WindowEvent;
 import java.lang.reflect.InvocationTargetException;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -98,8 +100,10 @@ public class GuiCommand implements Command {
 
     @FunctionalInterface
     interface PlayAction {
-        void run(RunnerOptions options);
+        void run(RunnerOptions options, boolean closeOnLaunch);
     }
+
+    static final Duration LAUNCH_CHECK_TIME = Duration.ofSeconds(5);
 
     private final Supplier<Path> configDbLocator;
     private final GuiStarter guiStarter;
@@ -118,6 +122,7 @@ public class GuiCommand implements Command {
     private JFrame frame;
     private SlugSelectorPanel slugSelector;
     private NewReleaseBar newReleaseBar;
+    private PlayPanel playPanel;
 
     public GuiCommand() {
         this(new ConfigDbLocator());
@@ -127,7 +132,13 @@ public class GuiCommand implements Command {
     GuiCommand(Supplier<Path> configDbLocator) {
         this.configDbLocator = configDbLocator;
         this.repairAction = (slug, status, inMemoryHashing) -> repairClient(configDbLocator, slug, status, inMemoryHashing);
-        this.runAction = (options) -> runClient(configDbLocator, options);
+        this.runAction = (options, closeOnLaunch) -> {
+            if (closeOnLaunch) {
+                closeAfterLaunch(startClient(configDbLocator, options), LAUNCH_CHECK_TIME, () -> SwingUtilities.invokeLater(this::close));
+            } else {
+                runClient(configDbLocator, options);
+            }
+        };
         this.loginAction = (username, password) -> login(configDbLocator, username, password);
         this.logoutAction = slug -> logout(configDbLocator, slug);
         this.selectSlugAction = slug -> storeSlug(configDbLocator, slug);
@@ -228,7 +239,7 @@ public class GuiCommand implements Command {
                 final var optionsPanel = new OptionsPanel(frame, settingsStore, credentialsHandler, cacheHandler);
                 this.slugSelector = new SlugSelectorPanel(selectSlugAction, uiScaling);
                 final var clientPanel = new ClientPanel(frame, loginAction, logoutAction, repairAction, () -> optionsPanel.useInMemoryHashing(), settingsStore, credentialsHandler, slugSelector, uiScaling);
-                final var playPanel = new PlayPanel(runAction, () -> optionsPanel.getRunnerOptions(slugSelector.getSelectedSlug()), uiScaling);
+                this.playPanel = new PlayPanel(runAction, () -> optionsPanel.getRunnerOptions(slugSelector.getSelectedSlug()), settingsStore, uiScaling);
 
                 final MainTabs tabs = new MainTabs(settingsStore, clientPanel, optionsPanel);
                 this.newReleaseBar = new NewReleaseBar(uiScaling);
@@ -276,6 +287,7 @@ public class GuiCommand implements Command {
         if (guiState.newRelease() != null) {
             newReleaseBar.showRelease(guiState.newRelease());
         }
+        playPanel.startPlayOnStart();
     }
 
     void close() {
@@ -401,6 +413,26 @@ public class GuiCommand implements Command {
             new ClientRunner(configDb)
                 .run(options);
         }
+    }
+
+    private static Process startClient(Supplier<Path> configDbLocator, RunnerOptions options) {
+        try (ConfigDb configDb = ConfigDb.open(configDbLocator.get())) {
+            return new ClientRunner(configDb)
+                .start(options);
+        }
+    }
+
+    static void closeAfterLaunch(Process process, Duration checkTime, Runnable closeAction) {
+        try {
+            if (process.waitFor(checkTime.toMillis(), TimeUnit.MILLISECONDS) && process.exitValue() != 0) {
+                throw new RuntimeException("Client failed to start: exitCode=" + process.exitValue());
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted while checking the client start", e);
+        }
+        logger.info("Client started, closing Sweet");
+        closeAction.run();
     }
 
 }
