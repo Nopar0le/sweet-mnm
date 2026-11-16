@@ -14,6 +14,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.mnm.tools.StringUtils.join;
+import static org.mnm.tools.StringUtils.redact;
 
 public class ProcessUtils {
 
@@ -66,10 +67,30 @@ public class ProcessUtils {
             if (isCommandNotFound(e)) {
                 throw new CommandNotFound(command[0], e);
             }
-            throw new RuntimeException("Process failed: " + join(command), e);
+            throw new RuntimeException("Process failed: " + join(redact(command)), e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new RuntimeException("Process failed: " + join(command), e);
+            throw new RuntimeException("Process failed: " + join(redact(command)), e);
+        }
+    }
+
+    public static Process start(Path workingDirectory, String[] command, Map<String, String> environment) {
+        try {
+            ProcessBuilder processBuilder = new ProcessBuilder(command)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .redirectError(ProcessBuilder.Redirect.DISCARD);
+            if (workingDirectory != null) {
+                processBuilder.directory(workingDirectory.toFile());
+            }
+            if (environment != null && !environment.isEmpty()) {
+                processBuilder.environment().putAll(environment);
+            }
+            return processBuilder.start();
+        } catch (IOException e) {
+            if (isCommandNotFound(e)) {
+                throw new CommandNotFound(command[0], e);
+            }
+            throw new RuntimeException("Process failed: " + join(redact(command)), e);
         }
     }
 

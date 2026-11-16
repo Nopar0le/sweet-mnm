@@ -94,6 +94,31 @@ application {
   mainClass = 'org.mnm.MainClazz'
 }
 
+// The Gradle Windows start script does not put quotes around the "set" commands.
+// Thus, an install path with "&" (for example "Monsters & Memories") stops the script.
+tasks.named('startScripts', CreateStartScripts) {
+  doLast {
+    def script = windowsScript
+    def text = script.text
+    def fixes = [
+      'set DIRNAME=%~dp0'    : 'set "DIRNAME=%~dp0"',
+      'set APP_HOME=%DIRNAME%': 'set "APP_HOME=%DIRNAME%"',
+      'set APP_HOME=%%~fi'   : 'set "APP_HOME=%%~fi"',
+    ]
+    fixes.each { from, to ->
+      if (!text.contains(from)) {
+        throw new GradleException("Windows start script: could not find '${from}'")
+      }
+      text = text.replace(from, to)
+    }
+    def classpath = ~/(?m)^set CLASSPATH=(.*)$/
+    if (!(text =~ classpath)) {
+      throw new GradleException("Windows start script: could not find 'set CLASSPATH='")
+    }
+    script.text = text.replaceFirst(classpath, 'set "CLASSPATH=$1"')
+  }
+}
+
 graalvmNative {
   binaries {
     named("main") {

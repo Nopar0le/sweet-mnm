@@ -46,6 +46,7 @@ import org.mnm.events.ClientEventHandler;
 import org.mnm.release.ReleaseChecker;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.io.CleanupMode.NEVER;
 import static org.mnm.ApiServerStubs.stubAccountLogin;
 import static org.mnm.ApiServerStubs.stubGameVersions;
@@ -426,6 +427,42 @@ class GuiCommandTest {
             assertThat(guiState.newRelease()).isEqualTo("1.5.0");
             assertThat(guiState.slugs()).isEmpty();
         }
+    }
+
+    @Test
+    void shouldCloseWhenClientIsStillRunningAfterCheckTime() throws Exception {
+        final Process process = Mockito.mock(Process.class);
+        when(process.waitFor(500, TimeUnit.MILLISECONDS)).thenReturn(false);
+        final AtomicInteger closes = new AtomicInteger();
+
+        GuiCommand.closeAfterLaunch(process, Duration.ofMillis(500), closes::incrementAndGet);
+
+        assertThat(closes.get()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldCloseWhenClientStopsWithExitCodeZero() throws Exception {
+        final Process process = Mockito.mock(Process.class);
+        when(process.waitFor(500, TimeUnit.MILLISECONDS)).thenReturn(true);
+        when(process.exitValue()).thenReturn(0);
+        final AtomicInteger closes = new AtomicInteger();
+
+        GuiCommand.closeAfterLaunch(process, Duration.ofMillis(500), closes::incrementAndGet);
+
+        assertThat(closes.get()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldNotCloseWhenClientFailsToStart() throws Exception {
+        final Process process = Mockito.mock(Process.class);
+        when(process.waitFor(500, TimeUnit.MILLISECONDS)).thenReturn(true);
+        when(process.exitValue()).thenReturn(1);
+        final AtomicInteger closes = new AtomicInteger();
+
+        assertThatThrownBy(() -> GuiCommand.closeAfterLaunch(process, Duration.ofMillis(500), closes::incrementAndGet))
+            .isInstanceOf(RuntimeException.class)
+            .hasMessageContaining("exitCode=1");
+        assertThat(closes.get()).isZero();
     }
 
     private static void addClients(ConfigDb configDb, Path path, String... slugs) {
