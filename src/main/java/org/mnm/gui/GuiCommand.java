@@ -21,11 +21,11 @@ import org.slf4j.LoggerFactory;
 
 import org.mnm.api.ApiConnector;
 import org.mnm.api.TokenSupplier;
+import org.mnm.cache.CacheCleaner;
+import org.mnm.cache.CacheHandler;
 import org.mnm.cli.Arguments;
 import org.mnm.cli.Command;
 import org.mnm.cli.DevFlags;
-import org.mnm.cache.CacheCleaner;
-import org.mnm.cache.CacheHandler;
 import org.mnm.client.ClientInstaller;
 import org.mnm.client.ClientRunner;
 import org.mnm.client.Factories;
@@ -100,7 +100,7 @@ public class GuiCommand implements Command {
 
     @FunctionalInterface
     interface PlayAction {
-        void run(RunnerOptions options, boolean closeOnLaunch);
+        Process run(RunnerOptions options);
     }
 
     static final Duration LAUNCH_CHECK_TIME = Duration.ofSeconds(5);
@@ -132,13 +132,7 @@ public class GuiCommand implements Command {
     GuiCommand(Supplier<Path> configDbLocator) {
         this.configDbLocator = configDbLocator;
         this.repairAction = (slug, status, inMemoryHashing) -> repairClient(configDbLocator, slug, status, inMemoryHashing);
-        this.runAction = (options, closeOnLaunch) -> {
-            if (closeOnLaunch) {
-                closeAfterLaunch(startClient(configDbLocator, options), LAUNCH_CHECK_TIME, () -> SwingUtilities.invokeLater(this::close));
-            } else {
-                runClient(configDbLocator, options);
-            }
-        };
+        this.runAction = new DetachedPlayRunner(configDbLocator);
         this.loginAction = (username, password) -> login(configDbLocator, username, password);
         this.logoutAction = slug -> logout(configDbLocator, slug);
         this.selectSlugAction = slug -> storeSlug(configDbLocator, slug);
@@ -239,7 +233,8 @@ public class GuiCommand implements Command {
                 final var optionsPanel = new OptionsPanel(frame, settingsStore, credentialsHandler, cacheHandler);
                 this.slugSelector = new SlugSelectorPanel(selectSlugAction, uiScaling);
                 final var clientPanel = new ClientPanel(frame, loginAction, logoutAction, repairAction, () -> optionsPanel.useInMemoryHashing(), settingsStore, credentialsHandler, slugSelector, uiScaling);
-                this.playPanel = new PlayPanel(runAction, () -> optionsPanel.getRunnerOptions(slugSelector.getSelectedSlug()), settingsStore, uiScaling);
+                this.playPanel = new PlayPanel(runAction, () -> optionsPanel.getRunnerOptions(slugSelector.getSelectedSlug()), settingsStore,
+                    process -> closeAfterLaunch(process, LAUNCH_CHECK_TIME, () -> SwingUtilities.invokeLater(this::close)), uiScaling);
 
                 final MainTabs tabs = new MainTabs(settingsStore, clientPanel, optionsPanel);
                 this.newReleaseBar = new NewReleaseBar(uiScaling);
@@ -408,24 +403,48 @@ public class GuiCommand implements Command {
         }
     }
 
-    private static void runClient(Supplier<Path> configDbLocator, RunnerOptions options) {
-        try (ConfigDb configDb = ConfigDb.open(configDbLocator.get())) {
-            new ClientRunner(configDb)
-                .run(options);
-        }
-    }
+    static class DetachedPlayRunner implements PlayAction {
 
-    private static Process startClient(Supplier<Path> configDbLocator, RunnerOptions options) {
-        try (ConfigDb configDb = ConfigDb.open(configDbLocator.get())) {
-            return new ClientRunner(configDb)
-                .start(options);
+        private static final long EARLY_EXIT_SECONDS = 3;
+
+        private final Supplier<Path> configDbLocator;
+
+        DetachedPlayRunner(Supplier<Path> configDbLocator) {
+            this.configDbLocator = configDbLocator;
         }
+
+        @Override
+        public Process run(RunnerOptions options) {
+            try (ConfigDb configDb = ConfigDb.open(configDbLocator.get())) {
+                final ClientRunner.ClientRuntime runtime = new ClientRunner(configDb).runDetached(options);
+                watchEarlyExit(runtime);
+                return runtime.process();
+            }
+        }
+
+        private static void watchEarlyExit(ClientRunner.ClientRuntime launch) {
+            Thread.ofVirtual().name("game-start-watch").start(() -> {
+                try {
+                    final Process process = launch.process();
+                    if (process.waitFor(EARLY_EXIT_SECONDS, TimeUnit.SECONDS) && process.exitValue() != 0) {
+                        String errorMsg = "Game client stopped with exit code %d. See the log: %s"
+                            .formatted(process.exitValue(), launch.logFile());
+                        throw new IllegalStateException(errorMsg);
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+        }
+
     }
 
     static void closeAfterLaunch(Process process, Duration checkTime, Runnable closeAction) {
         try {
             if (process.waitFor(checkTime.toMillis(), TimeUnit.MILLISECONDS) && process.exitValue() != 0) {
-                throw new RuntimeException("Client failed to start: exitCode=" + process.exitValue());
+                // DetachedPlayRunner shows the error, so Sweet stays open
+                logger.warn("Client failed to start: exitCode={}, Sweet stays open", process.exitValue());
+                return;
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
