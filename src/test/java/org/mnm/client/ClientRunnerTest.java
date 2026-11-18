@@ -17,6 +17,7 @@ import org.mnm.client.RunnerOptions.UmuOptions;
 import org.mnm.config.Client;
 import org.mnm.config.CursorSize;
 import org.mnm.config.ConfigDb;
+import org.mnm.config.Environment;
 import org.mnm.config.OS;
 import org.mnm.config.Token;
 import org.mnm.tools.PanicException;
@@ -194,8 +195,11 @@ class ClientRunnerTest {
         AtomicReference<String[]> command = new AtomicReference<>();
 
         try (MockedStatic<OS> osMock = Mockito.mockStatic(OS.class);
+             // With OS.isWindows() true, the config location comes from LOCALAPPDATA, which only Windows sets
+             MockedStatic<Environment> environmentMock = Mockito.mockStatic(Environment.class, Mockito.CALLS_REAL_METHODS);
              MockedStatic<ProcessUtils> processMock = Mockito.mockStatic(ProcessUtils.class)) {
             osMock.when(OS::isWindows).thenReturn(true);
+            environmentMock.when(Environment::getSweetConfigLocation).thenReturn(tempDir.resolve("config"));
             processMock.when(() -> ProcessUtils.runDetached(any(Path.class), any(String[].class), anyMap(), any(Path.class)))
                 .thenAnswer(invocation -> {
                     command.set(invocation.getArgument(1));
