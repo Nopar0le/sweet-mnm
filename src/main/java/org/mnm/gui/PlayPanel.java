@@ -14,6 +14,7 @@ import java.awt.FlowLayout;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import org.mnm.client.RunnerOptions;
@@ -24,6 +25,7 @@ import org.mnm.events.ClientEventHandler;
 import org.mnm.events.LoginListener;
 import org.mnm.events.Refreshable;
 import org.mnm.events.RepairListener;
+import org.mnm.events.RunningClientsListener;
 
 import static org.mnm.config.Client.Status.UPDATED;
 import static org.mnm.config.SettingsStore.CLOSE_ON_PLAY_KEY;
@@ -34,7 +36,7 @@ import static org.mnm.gui.Style.BASE_FONT_SIZE;
 import static org.mnm.gui.Style.SCALE;
 
 public class PlayPanel extends JPanel
-    implements LoginListener, RepairListener, Refreshable {
+    implements LoginListener, RepairListener, Refreshable, RunningClientsListener {
 
     final JButton play;
     final JCheckBox closeOnPlay;
@@ -45,10 +47,13 @@ public class PlayPanel extends JPanel
     // Time to cancel "Play on start" before the client starts
     static final int PLAY_ON_START_SECONDS = 3;
 
-    // The client runs on a non-daemon thread: Sweet stays alive until the client stops
+    // The client starts on a separate thread, so that the UI does not freeze while the client starts
     private static final Executor CLIENT_EXECUTOR = task -> Thread.ofPlatform().name("client-runner").daemon(false).start(task);
 
     private final Executor executor;
+    private final Consumer<Process> closeOnLaunchAction;
+    private final RunningClients runningClients = new RunningClients(ClientEventHandler.getInstance());
+    private String currentSlug = null;
     private boolean canPlay = false;
     private boolean running = false;
     private final Timer countdown;
@@ -58,26 +63,30 @@ public class PlayPanel extends JPanel
     public PlayPanel(
         GuiCommand.PlayAction runAction,
         Supplier<RunnerOptions> optionsSupplier,
-        SettingsStore settingsStore) {
-        this(runAction, optionsSupplier, settingsStore, 1f);
+        SettingsStore settingsStore,
+        Consumer<Process> closeOnLaunchAction) {
+        this(runAction, optionsSupplier, settingsStore, closeOnLaunchAction, 1f);
     }
 
     public PlayPanel(
         GuiCommand.PlayAction runAction,
         Supplier<RunnerOptions> optionsSupplier,
         SettingsStore settingsStore,
+        Consumer<Process> closeOnLaunchAction,
         float uiScaling) {
-        this(runAction, optionsSupplier, settingsStore, uiScaling, CLIENT_EXECUTOR);
+        this(runAction, optionsSupplier, settingsStore, closeOnLaunchAction, uiScaling, CLIENT_EXECUTOR);
     }
 
     PlayPanel(
         GuiCommand.PlayAction runAction,
         Supplier<RunnerOptions> optionsSupplier,
         SettingsStore settingsStore,
+        Consumer<Process> closeOnLaunchAction,
         float uiScaling,
         Executor executor) {
 
         this.executor = executor;
+        this.closeOnLaunchAction = closeOnLaunchAction;
 
         setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
         setBorder(BorderFactory.createEmptyBorder(2 * SCALE, 0, 0, 0));
@@ -121,13 +130,22 @@ public class PlayPanel extends JPanel
         ClientEventHandler.getInstance().register(this);
     }
 
-    // Runs the client in the background, so that the UI does not freeze while the client runs
+    // Starts the client in the background, so that the UI does not freeze while the client starts
     private void play(GuiCommand.PlayAction runAction, RunnerOptions options, boolean closeOnLaunch) {
         running = true;
         updatePlay();
         CompletableFuture
-            .runAsync(() -> runAction.run(options, closeOnLaunch), executor)
-            .whenComplete((_, error) -> SwingUtilities.invokeLater(() -> {
+            .supplyAsync(() -> {
+                final Process process = runAction.run(options);
+                if (closeOnLaunch && process != null) {
+                    closeOnLaunchAction.accept(process);
+                }
+                return process;
+            }, executor)
+            .whenComplete((process, error) -> SwingUtilities.invokeLater(() -> {
+                if (process != null && options != null) {
+                    runningClients.track(options.slug(), process);
+                }
                 running = false;
                 updatePlay();
                 if (error != null) {
@@ -148,7 +166,7 @@ public class PlayPanel extends JPanel
     }
 
     private void updatePlay() {
-        play.setEnabled(canPlay && !running);
+        play.setEnabled(canPlay && !running && !runningClients.isRunning(currentSlug));
         if (!play.isEnabled()) {
             stopCountdown();
         }
@@ -247,7 +265,18 @@ public class PlayPanel extends JPanel
     }
 
     @Override
+    public void clientStarted(String slug) {
+        updatePlay();
+    }
+
+    @Override
+    public void clientStopped(String slug) {
+        updatePlay();
+    }
+
+    @Override
     public void refresh(ClientStatus client) {
+        currentSlug = client == null || client.client() == null ? null : client.client().slug();
         setCanPlay(client != null && client.validToken() && client.statusIs(UPDATED));
     }
 
