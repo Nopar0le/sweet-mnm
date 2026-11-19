@@ -60,7 +60,8 @@ public class PlayPanel extends JPanel
     private int remainingSeconds;
     private boolean counting = false;
 
-    public PlayPanel(
+    // Test-only constructor. Do not call it from production code.
+    PlayPanel(
         GuiCommand.PlayAction runAction,
         Supplier<RunnerOptions> optionsSupplier,
         SettingsStore settingsStore,
@@ -77,6 +78,7 @@ public class PlayPanel extends JPanel
         this(runAction, optionsSupplier, settingsStore, closeOnLaunchAction, uiScaling, CLIENT_EXECUTOR);
     }
 
+    // Test-only constructor. Do not call it from production code.
     PlayPanel(
         GuiCommand.PlayAction runAction,
         Supplier<RunnerOptions> optionsSupplier,
