@@ -28,9 +28,10 @@ class ClientPaths {
     private final String userHome;
 
     ClientPaths(ClientStatus clientStatus, boolean clientAsWinePrefix) {
-        this(clientStatus, clientAsWinePrefix, System.getenv("STEAM_COMPAT_DATA_PATH"), System.getProperty("user.home"));
+        this(clientStatus, clientAsWinePrefix, System.getenv("STEAM_COMPAT_DATA_PATH"), Environment.getHomeDir().toString());
     }
 
+    // Test-only constructor. Do not call it from production code.
     ClientPaths(ClientStatus clientStatus, boolean clientAsWinePrefix, String compatDataPath, String userHome) {
         this.userHome = userHome;
         missingClient = !OS.isWindows() && clientAsWinePrefix && (clientStatus == null || clientStatus.client() == null);
